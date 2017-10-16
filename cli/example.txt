@@ -1,0 +1,668 @@
+
+1、CLI消息接收处理：
+
+ ULONG       aulMsg[4];
+ SYS_MSG_S   *pMsg = NULL;
+
+ if ( VOS_ERROR == VOS_QueReceive( g_ulIFMQue, aulMsg, WAIT_FOREVER ) )
+        {
+            ASSERT( 0 );
+            continue;
+        }
+
+pMsg = ( SYS_MSG_S * ) aulMsg[ 3 ];
+
+switch ( pMsg->usMsgCode )
+        {
+           
+            case AWMC_CLI_BASE:
+            {
+                IFM_CMDMsgProcess( pMsg );
+                VOS_Free( pMsg );
+            }   break;
+            
+       
+            default:
+            {
+                ASSERT( 0 );
+            }   break; /*此时不需要释放内存*/
+        }
+
+
+2、例子：设定自协商
+
+QDEFUN ( auto_enable_if,
+         auto_enable_if_cmd,
+         "auto [enable|disable]",
+         "Auto negotiation setting\n"
+         "Auto negotiation enable\n"
+         "Auto negotiation disable\n",
+         &g_ulIFMQue )
+{
+    ULONG ulIfIndex = 0;
+    ULONG ulAuto = 0;
+#ifdef _DISTRIBUTE_PLATFORM_
+    ULONG   ulOldAuto = 0;
+#endif
+    LONG lRet = VOS_OK;
+
+    ulIfIndex = ( ULONG ) ( vty->index ) ;
+
+    if ( !VOS_StrCmp( argv[ 0 ], "enable" ) )
+    {
+        ulAuto = AUTO_ENABLE;
+    }
+    else if ( !VOS_StrCmp( argv[ 0 ], "disable" ) )
+    {
+        ulAuto = AUTO_DISABLE;
+    }
+    else
+    {
+        vty_out( vty, "%% Parameter is error.\r\n" );
+        return CMD_SUCCESS;
+    }
+    
+#ifdef _DISTRIBUTE_PLATFORM_ /* add by wood */
+    lRet = IFM_get_info ( ulIfIndex, IFM_CONFIG_ETH_AUTONEGOTATION, &ulOldAuto, NULL );
+    if ( VOS_OK != lRet )
+    {
+        IFM_PError( lRet, vty );
+        return CMD_WARNING;
+    }
+    else
+    {
+        if ( ulOldAuto == ulAuto )
+        {
+            if ( ulAuto == AUTO_ENABLE )
+            {
+                vty_out( vty, "%% Auto negotiation has been enabled already.\r\n" );
+            }
+            
+            if ( ulAuto == AUTO_DISABLE )
+            {
+                vty_out( vty, "%% Auto negotiation has been disabled already.\r\n" );
+            }
+            
+            return CMD_WARNING;
+        }
+    }
+#endif
+
+    lRet = IFM_config( ulIfIndex, IFM_CONFIG_ETH_AUTONEGOTATION, &ulAuto, NULL );
+
+    if ( VOS_OK != lRet )
+    {
+        IFM_PError( lRet, vty );
+    }
+
+#ifdef _DISTRIBUTE_PLATFORM_
+    if(VOS_OK == lRet)
+    {
+        IFM_InterfaceActSyncSlave(
+            IFM_MSG_INTERFACE_CONFIG,\
+            IFM_CONFIG_ETH_AUTONEGOTATION, ulIfIndex, 0, 
+            (UCHAR *)&ulAuto, sizeof( ulAuto )
+            );
+    }
+#endif
+    return CMD_SUCCESS;
+}
+
+3、Mac配置
+
+QDEFUN( interface_mac_func,
+        interface_mac_cmd,
+        "mac <H.H.H>" ,
+        "Config interface's MAC\n"
+        "Specify MAC of interface\n",
+        &g_ulIFMQue )
+{
+    ULONG unIfIndex = 0;
+    ULONG lRet ;
+    CHAR Mac[ 6 ] = {0, 0, 0, 0, 0, 0};
+
+    unIfIndex = ( ULONG ) ( vty->index ) ;
+
+    if ( GetMacAddr( ( CHAR* ) argv[ 0 ], Mac ) != VOS_OK )
+    {
+        vty_out( vty, "%% Invalid MAC address.\r\n" );
+        return CMD_SUCCESS;
+    }
+
+    lRet = IFM_config( unIfIndex, IFM_CONFIG_ETH_DEVADDR, Mac, NULL );
+    if ( VOS_OK != lRet )
+    {
+        IFM_PError( lRet, vty );
+    }
+
+#ifdef _DISTRIBUTE_PLATFORM_
+    if(VOS_OK == lRet)
+    {
+        IFM_InterfaceActSyncSlave(
+            IFM_MSG_INTERFACE_CONFIG,\
+            IFM_CONFIG_ETH_DEVADDR, unIfIndex, 0, 
+            (UCHAR *)Mac, sizeof( Mac )
+            );
+    }
+#endif
+    return CMD_SUCCESS;
+}
+
+4、例子
+
+QDEFUN( showt_eth_flow_monitor_interval_func,
+        show_eth_flow_monitor_interval_cmd,
+        "interface ethernet flow-monitor time [0 | <5-300>]",
+        "Interface in the system\n"
+        "Eethernet interfaces\n"
+        "Flow monitor\n"
+        "Interval\n"
+        "A value of 0 indicates that the function is disabled\n"
+        "The range is 5-300 seconds(5s as the step to increase or decrease).\n",
+        &g_ulIFMQue )
+{
+    ULONG   ulInterval = 0;
+    
+    ulInterval = ( ULONG )VOS_AtoL( argv[0] );
+    if ( ulInterval % 5 == 0 )
+    {
+        if ( (ulInterval == 0) || (ulInterval >= 5 && ulInterval <= 300 ) )
+        {
+            g_ulGetFlowTimerTemplet = ulInterval;
+            g_ulGetFlowTimer        = ulInterval;
+            
+            return CMD_SUCCESS;
+        }
+    }
+    
+    vty_out( vty, "%% Invalid flow-monitor interval\r\n" );
+    
+    return CMD_WARNING;
+}
+
+
+5、多参数
+DEFUN( add_mac_func,
+        add_mac_cmd,
+        "add mac port <slot/port> macaddress <H.H.H> {[vlan] [<vlanname>]}*1 "
+        "{[trunk] [<trunkname>]}*1 ",
+        "Add MAC address\n"
+        "Config equipment's MAC\n"
+        "Add the mac by port \n"
+        "Input the port no please \n"
+        "Add the designated mac \n"
+        "Input the mac address\n"
+        "Add the mac by vlan\n"
+        "Input the vlanname please\n"
+        "Add the mac by Trunk\n"
+        "Input the Trunk Name please\n"
+ )
+{
+	ULONG lRet ;
+	CHAR Mac[ 6 ] = {0, 0, 0, 0, 0, 0};
+	int		arg_static = 1, arg_trunk = 0, arg_l3if = 0,
+	arg_scp = 0, arg_ds = 0, arg_dd = 0, arg_count = 1, arg_modid = 0,
+	arg_vlan = 1, arg_tgid = 0, arg_cbit = 0, arg_hit = 0,
+	arg_replace = 0, arg_port;
+	int          arg_rpe = TRUE, arg_rlk = FALSE;
+	int			rv = CMD_SUCCESS;
+	ULONG		ulBase = 0;
+      cli_l2_entry_t l2entry = {0};
+	int p = 0;
+	int port=0;
+	int unit = 0;
+	CHAR    ifName[IFM_NAME_SIZE + 1] = { 0 };
+	ULONG   ulIFIndex = 0;
+	ULONG   ulState = 0;
+	CHAR    prompt[64] = { 0 };
+	ULONG   ulIfindex =0;
+	ULONG   ulTrunkIfindex=0;
+
+		
+	if( ulBase==argc ) { goto _ADD_MAC; }
+	/*port*/
+	VOS_MemZero( ifName, IFM_NAME_SIZE + 1 );
+	VOS_Snprintf( ifName, IFM_NAME_SIZE, "%s%s", ETH_SHORT_NAME, argv[0] );
+	/*p=( int ) VOS_AtoL( argv[1] );*/
+	ulIFIndex = IFM_GetIfindexByNameExt( ifName, &ulState );
+	if ( ulIFIndex == 0 )
+	{
+		vty_out( vty, "%% Can not find interface %s.\r\n", ifName );
+		return CMD_WARNING;
+	}
+	port= IFM_ETH_GET_PORT( ulIFIndex );
+	/*p=L2_2_PHY_PORT(port);*/
+	p=port-1;   
+
+	/*mac address*/
+	if ( GetMacAddr( ( CHAR* ) argv[ 1 ], Mac ) != VOS_OK )
+	{
+		vty_out( vty, "%% Invalid MAC address.\r\n" );
+		return CMD_SUCCESS;
+	}
+	ulBase = ulBase+2;
+	if( ulBase==argc ) { goto _ADD_MAC; }
+	if( VOS_StrCmp( argv[ulBase], "vlan")==0)
+	{
+		lRet = ifm_check_valid_interface_name( argv[ ulBase+1 ] );
+        if(lRet != VOS_OK){
+            IFM_PError( lRet, vty );
+		}			
+        ulIfindex = IFM_GetIfindexByName( argv[ ulBase+1 ] );
+        if ( ulIfindex == 0 )
+        {
+           vty_out( vty, "%% VLAN %s does not exist.\r\n", argv[ ulBase+1 ] );
+           return CMD_SUCCESS;
+        }
+		arg_vlan = IFM_VLAN_GET_VLANID(ulIfindex);
+		ulBase = ulBase+2;
+
+		if( ulBase==argc ) { goto _ADD_MAC; }
+		if( VOS_StrCmp( argv[ulBase], "trunk")==0)
+		{
+			arg_trunk=1;
+			lRet = trunk_check_name( argv[ ulBase+1 ] );    
+			if ( lRet != VOS_OK && lRet != -IFM_E_NAMEUSED )    
+			{  		
+						IFM_PError( lRet, vty );
+						return CMD_SUCCESS;
+			}
+			ulTrunkIfindex = IFM_GetIfindexByName( argv[ ulBase+1] );
+			if(ulTrunkIfindex==0)
+			{
+				vty_out( vty, "%% Interface %s is not Exist.\r\n", argv[ ulBase+1 ] );
+				return CMD_SUCCESS;
+			}
+			if ( IFM_IFINDEX_GET_TYPE(ulIFIndex) != IFM_TRUNK_TYPE )
+    		{
+        		vty_out( vty, "%% Interface %s is not Trunk.\r\n", argv[ ulBase+1 ] );
+       	 		return CMD_SUCCESS;
+    		}
+			arg_tgid= ( int ) IFM_TRUNK_GET_TRUNKID(ulTrunkIfindex);
+		}
+	}
+	else if( VOS_StrCmp( argv[ulBase], "trunk")==0)
+	{
+		arg_trunk=1;
+		lRet = trunk_check_name( argv[ ulBase+1 ] );    
+		if ( lRet != VOS_OK && lRet != -IFM_E_NAMEUSED )    
+		{  		
+			IFM_PError( lRet, vty );
+			return CMD_SUCCESS;
+		}
+		ulTrunkIfindex = IFM_GetIfindexByName( argv[ ulBase+1] );
+		if(ulTrunkIfindex==0)
+		{
+			vty_out( vty, "%% Interface %s is not Exist.\r\n", argv[ ulBase+1 ] );
+			return CMD_SUCCESS;
+		}
+		if ( IFM_IFINDEX_GET_TYPE(ulIFIndex) != IFM_TRUNK_TYPE )
+    	{
+        	vty_out( vty, "%% Interface %s is not Trunk.\r\n", argv[ ulBase+1 ] );
+       		return CMD_SUCCESS;
+    	}
+		arg_tgid= ( int ) IFM_TRUNK_GET_TRUNKID(ulTrunkIfindex);
+	}
+
+_ADD_MAC:
+	VOS_MemCpy(l2entry.mac, Mac, 6);
+	l2entry.tgid_port = p;
+	l2entry.vid = arg_vlan;
+	l2entry.tgid = arg_tgid;
+	l2entry.trunk = arg_trunk;
+	l2entry.l2_static = arg_static;
+
+    bms_l2_add(unit,&l2entry);
+	return CMD_SUCCESS;
+}
+
+
+6·show_run例子
+
+LONG ETH_show_run( ULONG ulIfindex, VOID * p )
+{
+    ULONG               i = 0;
+    IFM_NET_DEVICE_S    *pNetDev = NULL;
+    ETH_P_DATA_S        *pETH_P_DATA = NULL;
+    LONG                lRet;
+    struct vty          *vty = p;
+#ifdef _DISTRIBUTE_PLATFORM_
+    ULONG ifIndex ;
+    ULONG slot ;
+    ULONG port ;
+#endif
+    vty_out( vty, "!Ethernet port config\r\n" );
+
+#ifdef _DISTRIBUTE_PLATFORM_ /* v2.2 build24 新增加的功能 */
+    if ( g_ulGetFlowTimerTemplet != 0 )
+    {
+        vty_out( vty, "  interface ethernet flow-monitor time %d \r\n", g_ulGetFlowTimerTemplet );
+    }
+    
+    if ( g_ulPacketLength != IFM_JUMBO_DEFAULT_PKT_SIZE ) /* for D020374 */
+    {
+        vty_out( vty, "  jumbo receive length %d \r\n", g_ulPacketLength );
+    }
+#endif
+
+    for ( i = IFM_GET_FIRST_INTERFACE( IFM_ETH_TYPE );i ;i = IFM_GET_NEXT_INTERFACE( i ) )
+    {
+        lRet = IFM_find_netdev( i, &pNetDev, NULL );
+        CHECK_LRET( lRet );
+
+        /*
+        if(pNetDev->ulUsed == IFM_INTERFACE_MERGED)
+        {
+            continue;
+        }
+        */
+
+        pETH_P_DATA = ( ETH_P_DATA_S * ) pNetDev->pPrivateData;
+        if ( !pETH_P_DATA )
+        {
+            return -IFM_E_NOPRIVATE; /*need err code*/
+        }
+#ifndef _DISTRIBUTE_PLATFORM_
+        vty_out( vty, " interface ethernet %s\r\n", pNetDev->szName + 3 );
+
+
+        if ( pETH_P_DATA->ulLevel != ETH_DEFAULT_LEVEL )
+        {
+            if ( pETH_P_DATA->ulLevel == IFM_LEVEL_2_ENABLE )
+            {
+                vty_out( vty, "  forward l2 enable\r\n" );
+            }
+            else if ( pETH_P_DATA->ulLevel == IFM_LEVEL_2_DISABLE )
+            {
+                vty_out( vty, "  forward l2 disable\r\n" );
+            }
+            else
+            {
+                KASSERT(0);
+            }
+        }
+
+        if ( pETH_P_DATA->ulAutonegotation == AUTO_DISABLE )
+        {
+            vty_out( vty, "  auto disable\r\n" );
+        }
+
+        /*
+        [full|half]
+        default is dependent with autonegotiate
+        */
+        if ( ( pETH_P_DATA->ulAutonegotation == AUTO_DISABLE ) && 
+             ( pETH_P_DATA->ulDuplex == DUPLEX_HALF ) )
+        {
+            vty_out( vty, "  duplex half \r\n" );
+        }
+
+        /*
+        flowcontrol
+        default is dependent with autonegotiate
+        */
+        if ( ( pETH_P_DATA->ulAutonegotation == AUTO_DISABLE ) &&
+             ( pETH_P_DATA->ulFlowControl == FLOWCTL_ENABLE ) )
+        {
+            vty_out( vty, "  flowcontrol enable\r\n" );
+        }
+
+        /*
+        speed [10|100|1000]
+        default is dependent with autonegotiate
+        */
+        if ( pETH_P_DATA->ulAutonegotation == AUTO_DISABLE && pETH_P_DATA->ulIfBaud != PORT100/*modify through hardware*/ )
+        {
+            vty_out( vty, "  speed %d \r\n", pETH_P_DATA->ulIfBaud );
+        }
+
+        /*mac地址的恢复*/
+        vty_out( vty, "  mac %2.2X%2.2X.%2.2X%2.2X.%2.2X%2.2X\r\n",
+                 pETH_P_DATA->aucDevAddr[ 0 ], pETH_P_DATA->aucDevAddr[ 1 ], pETH_P_DATA->aucDevAddr[ 2 ],
+                 pETH_P_DATA->aucDevAddr[ 3 ], pETH_P_DATA->aucDevAddr[ 4 ], pETH_P_DATA->aucDevAddr[ 5 ] );
+#else
+        /* auto-negotiation */
+        if( TRUE==IFM_ETH_AUTO_CANCONFIG( pETH_P_DATA ) &&
+            TRUE==IFM_ETH_AUTO_CANDISPLAY_SHOWRUN( pETH_P_DATA ) )
+        {
+            if( AUTO_ENABLE==pETH_P_DATA->ulAutonegotation )
+            {
+                print_if_head(vty,pNetDev);
+                vty_out( vty, "  auto enable\r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);
+                vty_out( vty, "  auto disable\r\n" );
+            }
+        }
+
+        /* level */
+#ifndef _DISTRIBUTE_PLATFORM_ /* change by wood for 三层端口默认显示forward l2 disable */
+        if ( TRUE == IFM_ETH_LEVEL_CANCONFIG( pETH_P_DATA ) &&
+             TRUE == IFM_ETH_LEVEL_CANDISPLAY_SHOWRUN( pETH_P_DATA ) )
+        {
+            if ( LEVEL_L2EN_L3DIS == pETH_P_DATA->ulLevel )
+            {
+                print_if_head(vty,pNetDev);         
+                vty_out( vty, "  forward l2 enable\r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);         
+                vty_out( vty, "  forward l2 disable\r\n" );
+            }
+        }
+#else
+        if ( TRUE == IFM_ETH_LEVEL_CANCONFIG( pETH_P_DATA ) )
+        {
+            if ( TRUE == IFM_ETH_LEVEL_CANDISPLAY_SHOWRUN( pETH_P_DATA ) )
+            {
+                if ( LEVEL_L2EN_L3DIS == pETH_P_DATA->ulLevel )
+                {
+                    print_if_head( vty, pNetDev );         
+                    vty_out( vty, "  forward l2 enable\r\n" );
+                }
+                else
+                {
+                    print_if_head( vty, pNetDev );         
+                    vty_out( vty, "  forward l2 disable\r\n" );
+                }
+            }
+        }
+        else
+        {
+            if ( pETH_P_DATA->ulLevel == LEVEL_L2DIS_L3EN )
+            {
+                /* 三层端口(管理网口除外)默认显示 forward l2 disable */
+                if ( pETH_P_DATA->ulIsMGT == FALSE )
+                {
+                    print_if_head( vty, pNetDev );
+                    vty_out( vty, "  forward l2 disable\r\n" );
+                }
+            }
+        }
+#endif
+        /* deplex */
+        if( TRUE==IFM_ETH_DUPLEX_CANCONFIG( pETH_P_DATA ) &&
+            TRUE==IFM_ETH_DUPLEX_CANDISPLAY_SHOWRUN( pETH_P_DATA ) )
+        {
+            if( DUPLEX_FULL==pETH_P_DATA->ulDuplex )
+            {
+                print_if_head(vty,pNetDev);     
+                vty_out( vty, "  duplex full \r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);     
+                vty_out( vty, "  duplex half \r\n" );
+            }
+        }
+
+        /* speed */
+        if( TRUE==IFM_ETH_SPEED_CANCONFIG( pETH_P_DATA ) &&
+            TRUE==IFM_ETH_SPEED_CANDISPLAY_SHOWRUN( pETH_P_DATA ) )
+        {
+            print_if_head(vty,pNetDev);
+            vty_out( vty, "  speed %d \r\n", pETH_P_DATA->ulIfBaud );
+        }
+#if(PRODUCT_CLASS==EPON3)
+        if(IFM_ETH_INGRESSRULE_CANDISPLAY_SHOWRUN( pETH_P_DATA)==TRUE)
+        {
+            if( pETH_P_DATA->ulIngressRule==INGRESS_DISABLE)
+            {
+                print_if_head(vty,pNetDev);            
+                vty_out( vty, "  Ingress rule disable\r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);            
+                vty_out( vty, "  Ingress rule enable\r\n" );
+            }
+        }
+        
+        if(IFM_ETH_EGRESSRULE_CANDISPLAY_SHOWRUN( pETH_P_DATA)==TRUE)
+        {
+            if( pETH_P_DATA->ulEgressRule==EGRESS_DISABLE)
+            {
+                print_if_head(vty,pNetDev);            
+                vty_out( vty, "  Egress rule disable\r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);            
+                vty_out( vty, "  Egress rule enable\r\n" );
+            }
+        }
+#endif
+        /* flow-control */
+        if( TRUE==IFM_ETH_FLOWCONTROL_CANCONFIG( pETH_P_DATA ) &&
+            TRUE==IFM_ETH_FLOWCONTROL_CANDISPLAY_SHOWRUN( pETH_P_DATA ))
+        {
+            if( FLOWCTL_ENABLE==pETH_P_DATA->ulFlowControl )
+            {
+                print_if_head(vty,pNetDev);            
+                vty_out( vty, "  flowcontrol enable\r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);            
+                vty_out( vty, "  flowcontrol disable\r\n" );
+            }
+        }
+
+        /* learn */
+        if( TRUE==IFM_ETH_LEARN_CANCONFIG( pETH_P_DATA ) &&
+            TRUE==IFM_ETH_LEARN_CANDISPLAY_SHOWRUN( pETH_P_DATA ) )
+        {
+            if( LEARN_ENABLE==pETH_P_DATA->ulLearn )
+            {
+                print_if_head(vty,pNetDev);       
+                    vty_out( vty, "  accesslimit disable\r\n" );
+            }
+            else
+            {
+                print_if_head(vty,pNetDev);   
+                    vty_out( vty, "  accesslimit enable\r\n" );
+            }
+        }
+/*yangshaoguang add */
+        ifIndex = pNetDev->ulIfIndex;
+        slot = IFM_ETH_GET_SLOT(ifIndex);
+        port = IFM_ETH_GET_PORT(ifIndex);
+	 if (g_trfbcpktspd_S[slot-1][port-1].ulBroadcastThresh != 1000)
+	 {
+	 	print_if_head(vty,pNetDev);
+	 	vty_out( vty, "  broadcast threshold %d\r\n",g_trfbcpktspd_S[slot-1][port-1].ulBroadcastThresh);
+	 }
+	 if (g_trfbcpktspd_S[slot-1][port-1].ulTrafficThresh != 80)
+	 {
+	 	print_if_head(vty,pNetDev);
+	 	vty_out( vty, "  traffic threshold %d\r\n",g_trfbcpktspd_S[slot-1][port-1].ulTrafficThresh);
+	 }
+/*add end*/
+
+#if 0   /* NOT support */
+        /* mac */
+        VOS_MemCpy(ucMac, SYS_PRODUCT_BASEMAC, 6);
+        if(!( ( ucMac[0] == pETH_P_DATA->aucDevAddr[0] )
+            &&( ucMac[1] == pETH_P_DATA->aucDevAddr[1] )
+            &&( ucMac[2] == pETH_P_DATA->aucDevAddr[2] )
+            &&( ucMac[3] == pETH_P_DATA->aucDevAddr[3] )
+            &&( ucMac[4] == pETH_P_DATA->aucDevAddr[4] )
+            &&( ucMac[5] == pETH_P_DATA->aucDevAddr[5] ) ) )
+        {
+            print_if_head(vty,pNetDev);        
+            vty_out( vty, "  mac %2.2X%2.2X.%2.2X%2.2X.%2.2X%2.2X\r\n",
+                     pETH_P_DATA->aucDevAddr[ 0 ], pETH_P_DATA->aucDevAddr[ 1 ], pETH_P_DATA->aucDevAddr[ 2 ],
+                     pETH_P_DATA->aucDevAddr[ 3 ], pETH_P_DATA->aucDevAddr[ 4 ], pETH_P_DATA->aucDevAddr[ 5 ] );
+            
+        }
+#endif
+
+        ETH_MirrorShowRun( i, vty );
+#endif
+
+        /*encap [snap|dix|sanpQ|dixQ|jumbo|jumboQ]*/
+        if ( ETH_ENCAPSULATION_TYPE_DIX != pETH_P_DATA->ulEncap )
+        {
+            switch ( pETH_P_DATA->ulEncap )
+            {
+                /*
+                case ETH_ENCAPSULATION_TYPE_DIX:
+                    vty_out(vty,"encap dix \r\n");
+                    break;
+                */
+                case ETH_ENCAPSULATION_TYPE_SNAP:
+                    vty_out( vty, "  encapsulation snap \r\n" );
+                    break;
+                case ETH_ENCAPSULATION_TYPE_DIX_8021Q:
+                    vty_out( vty, "  encapsulation dixQ \r\n" );
+                    break;
+                case ETH_ENCAPSULATION_TYPE_SNAP_8021Q:
+                    vty_out( vty, "  encapsulation snapQ \r\n" );
+                    break;
+                case ETH_ENCAPSULATION_TYPE_JUMBO_SNAP:
+                    vty_out( vty, "  encapsulation jumbo \r\n" );
+                    break;
+                case ETH_ENCAPSULATION_TYPE_JUMBO_SNAP_8021Q:
+                    vty_out( vty, "  encapsulation jumboQ \r\n" );
+                    break;
+                case ETH_ENCAPSULATION_TYPE_PPP:
+                    vty_out( vty, "  encapsulation ppp \r\n" );
+                    break;
+                /*
+                case ETH_ENCAPSULATION_TYPE_HDLC:
+                vty_out(vty,"encap hdlc \r\n");
+                break;
+                */
+                default:
+                    break;
+
+            }
+        }
+        dev_showrun_common( vty, pNetDev );
+#ifdef _DISTRIBUTE_PLATFORM_
+#ifndef __LIC__
+        ARP_ShowRun( vty, pNetDev->ulIfIndex );
+#endif
+#endif 
+
+        
+#ifndef _DISTRIBUTE_PLATFORM_
+        vty_out( vty, " exit\r\n" );
+#else
+        if(g_ulPrintHeader[IFM_IFINDEX_GET_TYPE(pNetDev->ulIfIndex)])
+        {
+            g_ulPrintHeader[IFM_IFINDEX_GET_TYPE(pNetDev->ulIfIndex)] = 0;
+            vty_out( vty, " exit\r\n" );
+        }
+#endif
+    }
+
+    vty_out( vty, "!\r\n\r\n" );
+
+    return VOS_OK;
+}
+
+
